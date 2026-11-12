@@ -1,0 +1,26 @@
+# Cloudflare Pages project config.
+#
+# This is a Pages project, not a Worker: Pages serves everything in site/ and
+# runs functions/ for the /api/* routes, all from one address —
+# https://coolaitools.pages.dev
+#
+# Deploy:  npm run deploy
+# Local:   npm run dev        (then open http://localhost:8788)
+
+name = "coolaitools"
+pages_build_output_dir = "site"
+compatibility_date = "2025-10-01"
+
+# KV is the only storage: free without a payment method, unlike R2.
+# It holds the job records, the uploaded pieces, and the finished transcripts.
+[[kv_namespaces]]
+binding = "JOBS"
+id = "PASTE_YOUR_KV_NAMESPACE_ID_HERE"
+
+[vars]
+# The repo that holds this project — the workflow lives there.
+GITHUB_REPO = "RohanSM/Cool-Tools"
+MAX_UPLOAD_MB = "100"
+
+# One-time secret (not committed):
+#   npx wrangler pages secret put GITHUB_TOKEN --project-name coolaitools

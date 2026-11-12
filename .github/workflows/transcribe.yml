@@ -16,12 +16,40 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The upload lives in Cloudflare KV, in pieces of up to 20 MB. KV is
+      # eventually consistent, so a fresh upload can 404 for up to a minute —
+      # hence the retries instead of a single curl.
       - name: Fetch the uploaded file
         env:
           SOURCE_URL: ${{ github.event.client_payload.sourceUrl }}
+          PARTS: ${{ github.event.client_payload.parts }}
         run: |
-          mkdir -p work
-          curl -fsSL --retry 3 --retry-delay 5 -o work/input "$SOURCE_URL"
+          set -euo pipefail
+          mkdir -p work/parts
+
+          for attempt in $(seq 1 20); do
+            if curl -fsS "$SOURCE_URL" -o work/manifest.json; then break; fi
+            echo "manifest not ready yet (attempt $attempt)"
+            sleep 6
+          done
+          cat work/manifest.json
+
+          PARTS="${PARTS:-$(python -c 'import json;print(json.load(open("work/manifest.json"))["parts"])')}"
+          echo "parts: $PARTS"
+
+          : > work/input
+          for n in $(seq 0 $((PARTS - 1))); do
+            ok=0
+            for attempt in $(seq 1 10); do
+              if curl -fsS "$SOURCE_URL&part=$n" -o "work/parts/$n"; then ok=1; break; fi
+              echo "part $n not ready yet (attempt $attempt)"
+              sleep 5
+            done
+            if [ "$ok" != "1" ]; then echo "part $n never arrived"; exit 1; fi
+          done
+
+          for n in $(seq 0 $((PARTS - 1))); do cat "work/parts/$n" >> work/input; done
+          rm -rf work/parts
           ls -lh work/input
 
       - uses: actions/setup-python@v5

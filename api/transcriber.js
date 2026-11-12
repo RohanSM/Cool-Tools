@@ -1,17 +1,21 @@
 /**
- * Transcript Studio API — mounted at /api/transcriber/ by worker/src/index.js.
+ * Transcript Studio API — mounted at /api/transcriber/ by api/router.js.
  *
  * Talks to GitHub Actions, which does the actual transcription:
  *
- *   browser ──upload──▶ Worker ──store──▶ R2
- *                          │
- *                          └── repository_dispatch ──▶ GitHub Actions
- *                                                          │
- *                                    downloads file from R2│
- *                                    runs transcribe.py    │
- *                                                          ▼
- *                                 POST /api/transcriber/jobs/:id/complete
- *   browser ◀──poll── Worker ◀──────────────────────────────┘
+ *   browser ──POST /jobs────────────▶ Worker        (creates the job, no file yet)
+ *   browser ──PUT  /jobs/:id/part/n─▶ Worker ──▶ KV (20 MB pieces, 24h TTL)
+ *   browser ──POST /jobs/:id/start──▶ Worker ── repository_dispatch ──▶ GitHub Actions
+ *                                                                          │
+ *                                          downloads the pieces from KV ◀───┘
+ *                                          runs transcribe.py
+ *                                                      │
+ *                       POST /api/transcriber/jobs/:id/complete
+ *   browser ◀──poll──────────────── Worker ◀────────────┘
+ *
+ * Storage is KV only, because R2 needs a payment method on file even inside
+ * its free allowance, while Workers KV is free without a card. KV values are
+ * limited to 25 MiB, hence the pieces.
  *
  * Secrets/vars needed:  GITHUB_TOKEN, GITHUB_REPO  (see README)
  */
@@ -23,6 +27,7 @@ const API = "/api/transcriber";
 const JOB_TTL = 60 * 60 * 24; // 24h
 const RATE_LIMIT = 20; // jobs per hour per IP
 const MAX_RESULT_BYTES = 20 * 1024 * 1024;
+const PART_SIZE = 20 * 1024 * 1024; // under KV's 25 MiB value limit
 
 export default {
   async fetch(request, env) {
@@ -32,6 +37,16 @@ export default {
     try {
       if (path === `${API}/jobs` && request.method === "POST") {
         return await createJob(request, url, env);
+      }
+
+      const partMatch = path.match(new RegExp(`^${API}/jobs/([a-z0-9-]+)/part/(\\d{1,3})$`));
+      if (partMatch && request.method === "PUT") {
+        return await uploadPart(partMatch[1], Number(partMatch[2]), request, env);
+      }
+
+      const startMatch = path.match(new RegExp(`^${API}/jobs/([a-z0-9-]+)/start$`));
+      if (startMatch && request.method === "POST") {
+        return await startJob(startMatch[1], url, request, env);
       }
 
       const jobMatch = path.match(new RegExp(`^${API}/jobs/([a-z0-9-]+)$`));
@@ -57,7 +72,7 @@ export default {
 };
 
 /* ------------------------------------------------------------------ */
-/* create a job                                                        */
+/* create a job — no file yet, the pieces follow                       */
 /* ------------------------------------------------------------------ */
 
 async function createJob(request, url, env) {
@@ -69,14 +84,12 @@ async function createJob(request, url, env) {
   const filename = safeFilename(url.searchParams.get("filename") || "upload.mp3");
   const wordsPerLine = clampWords(url.searchParams.get("words"));
   const maxMb = Number(env.MAX_UPLOAD_MB || 100);
-  const size =
-    Number(request.headers.get("content-length")) || Number(url.searchParams.get("size")) || 0;
+  const size = Number(url.searchParams.get("size")) || 0;
 
   if (!size) return json({ error: "The upload was empty." }, 400);
   if (size > maxMb * 1024 * 1024) {
     return json({ error: `That file is larger than ${maxMb} MB.` }, 413);
   }
-  if (!request.body) return json({ error: "No file received." }, 400);
 
   const ip = request.headers.get("cf-connecting-ip") || "unknown";
   if (await isRateLimited(ip, env)) {
@@ -84,36 +97,78 @@ async function createJob(request, url, env) {
   }
 
   const id = newJobId();
-  const sourceKey = `uploads/${id}/${filename}`;
-  const sourceToken = randomToken(24);
-  const callbackToken = randomToken(32);
-  const contentType = request.headers.get("content-type") || "application/octet-stream";
-
-  await env.BUCKET.put(sourceKey, request.body, {
-    httpMetadata: { contentType, contentDisposition: `attachment; filename="${filename}"` },
-  });
+  const parts = Math.ceil(size / PART_SIZE);
 
   const job = {
     id,
-    status: "queued",
+    status: "uploading",
     language,
     filename,
     wordsPerLine,
     size,
+    parts,
+    partSize: PART_SIZE,
+    contentType: request.headers.get("content-type") || "application/octet-stream",
     createdAt: Date.now(),
-    sourceKey,
-    sourceToken,
-    callbackToken,
+    sourceToken: randomToken(24),
+    uploadToken: randomToken(24),
+    callbackToken: randomToken(32),
   };
+
+  await saveJob(env, job);
+  return json({ id, partSize: PART_SIZE, parts, uploadToken: job.uploadToken });
+}
+
+/* ------------------------------------------------------------------ */
+/* upload the pieces                                                   */
+/* ------------------------------------------------------------------ */
+
+async function uploadPart(id, index, request, env) {
+  const job = await loadJob(env, id);
+  if (!job) return json({ error: "Unknown job" }, 404);
+  if (job.status !== "uploading") return json({ error: "This upload is already finished." }, 409);
+  if (!job.uploadToken || request.headers.get("x-upload-token") !== job.uploadToken) {
+    return json({ error: "Forbidden" }, 403);
+  }
+  if (!Number.isInteger(index) || index < 0 || index >= job.parts) {
+    return json({ error: "Part out of range" }, 400);
+  }
+  if (!request.body) return json({ error: "Empty part" }, 400);
+
+  const declared = Number(request.headers.get("content-length"));
+  if (declared && declared > PART_SIZE) {
+    return json({ error: "Part too large" }, 413);
+  }
+
+  await env.JOBS.put(partKey(id, index), request.body, {
+    expirationTtl: JOB_TTL,
+    metadata: { contentType: job.contentType },
+  });
+
+  return json({ ok: true, part: index });
+}
+
+async function startJob(id, url, request, env) {
+  const job = await loadJob(env, id);
+  if (!job) return json({ error: "Unknown job" }, 404);
+  if (job.status === "queued" || job.status === "processing" || job.status === "done") {
+    return json({ id: job.id, status: job.status });
+  }
+  if (job.status !== "uploading") return json({ error: `This job is ${job.status}.` }, 409);
+  if (!job.uploadToken || request.headers.get("x-upload-token") !== job.uploadToken) {
+    return json({ error: "Forbidden" }, 403);
+  }
 
   const origin = url.origin;
   const payload = {
     jobId: id,
-    language,
-    wordsPerLine,
-    sourceUrl: `${origin}${API}/jobs/${id}/source?token=${sourceToken}`,
+    language: job.language,
+    wordsPerLine: job.wordsPerLine,
+    filename: job.filename,
+    parts: job.parts,
+    sourceUrl: `${origin}${API}/jobs/${id}/source?token=${job.sourceToken}`,
     callbackUrl: `${origin}${API}/jobs/${id}/complete`,
-    callbackToken,
+    callbackToken: job.callbackToken,
   };
 
   const dispatched = await dispatch(env, payload);
@@ -124,6 +179,8 @@ async function createJob(request, url, env) {
     return json({ error: job.error }, 502);
   }
 
+  job.status = "queued";
+  job.queuedAt = Date.now();
   await saveJob(env, job);
   return json({ id: job.id, status: job.status });
 }
@@ -156,9 +213,8 @@ async function isRateLimited(ip, env) {
 /* ------------------------------------------------------------------ */
 
 async function getJob(id, env) {
-  const raw = await env.JOBS.get(`job:${id}`);
-  if (!raw) return json({ error: "This job has expired or does not exist." }, 404);
-  const job = JSON.parse(raw);
+  const job = await loadJob(env, id);
+  if (!job) return json({ error: "This job has expired or does not exist." }, 404);
   return json({
     id: job.id,
     status: job.status,
@@ -171,21 +227,46 @@ async function getJob(id, env) {
   });
 }
 
+/**
+ * Without `part`, returns a manifest of how the pieces are laid out.
+ * With `part=N`, returns that piece. The workflow stitches them together,
+ * which keeps this Worker from ever holding the whole file in memory.
+ */
 async function getSource(id, url, env) {
-  const raw = await env.JOBS.get(`job:${id}`);
-  if (!raw) return new Response("Not found", { status: 404 });
-  const job = JSON.parse(raw);
+  const job = await loadJob(env, id);
+  if (!job) return new Response("Not found", { status: 404, headers: CORS });
+
   const token = url.searchParams.get("token") || "";
   if (!job.sourceToken || token !== job.sourceToken) {
     return new Response("Forbidden", { status: 403, headers: CORS });
   }
-  const object = await env.BUCKET.get(job.sourceKey);
-  if (!object) return new Response("Not found", { status: 404, headers: CORS });
-  return new Response(object.body, {
+
+  const part = url.searchParams.get("part");
+  if (part === null) {
+    return new Response(
+      JSON.stringify({
+        parts: job.parts,
+        size: job.size,
+        filename: job.filename,
+        contentType: job.contentType,
+      }),
+      { headers: { ...CORS, "content-type": "application/json; charset=utf-8" } }
+    );
+  }
+
+  const index = Number(part);
+  if (!Number.isInteger(index) || index < 0 || index >= job.parts) {
+    return new Response("Part out of range", { status: 400, headers: CORS });
+  }
+
+  const { value, metadata } = await env.JOBS.getWithMetadata(partKey(id, index), { type: "arrayBuffer" });
+  if (!value) return new Response("Not found", { status: 404, headers: CORS });
+
+  return new Response(value, {
     headers: {
       ...CORS,
-      "content-type": object.httpMetadata?.contentType || "application/octet-stream",
-      "content-length": String(object.size),
+      "content-type": (metadata && metadata.contentType) || job.contentType || "application/octet-stream",
+      "content-length": String(value.byteLength),
     },
   });
 }
@@ -195,9 +276,8 @@ async function getSource(id, url, env) {
 /* ------------------------------------------------------------------ */
 
 async function completeJob(id, request, env) {
-  const raw = await env.JOBS.get(`job:${id}`);
-  if (!raw) return json({ error: "Unknown job" }, 404);
-  const job = JSON.parse(raw);
+  const job = await loadJob(env, id);
+  if (!job) return json({ error: "Unknown job" }, 404);
 
   const token = request.headers.get("x-callback-token") || "";
   if (!job.callbackToken || token !== job.callbackToken) {
@@ -233,9 +313,7 @@ async function completeJob(id, request, env) {
       model: result.model || "",
     };
     await saveJob(env, job);
-
-    // The source file is no longer needed once we have the transcript.
-    if (job.sourceKey) await env.BUCKET.delete(job.sourceKey).catch(() => {});
+    await dropParts(env, job);
     return json({ ok: true });
   }
 
@@ -243,6 +321,7 @@ async function completeJob(id, request, env) {
   job.error = body.error || "Transcription failed.";
   job.finishedAt = Date.now();
   await saveJob(env, job);
+  await dropParts(env, job);
   return json({ ok: true });
 }
 
@@ -250,8 +329,25 @@ async function completeJob(id, request, env) {
 /* helpers                                                             */
 /* ------------------------------------------------------------------ */
 
+async function loadJob(env, id) {
+  const raw = await env.JOBS.get(`job:${id}`);
+  return raw ? JSON.parse(raw) : null;
+}
+
 async function saveJob(env, job) {
   await env.JOBS.put(`job:${job.id}`, JSON.stringify(job), { expirationTtl: JOB_TTL });
+}
+
+function partKey(id, index) {
+  return `src:${id}:${index}`;
+}
+
+/** Delete the uploaded pieces once they're no longer needed. */
+async function dropParts(env, job) {
+  const count = job.parts || 0;
+  for (let i = 0; i < count; i++) {
+    await env.JOBS.delete(partKey(job.id, i)).catch(() => {});
+  }
 }
 
 function newJobId() {

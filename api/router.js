@@ -1,10 +1,11 @@
 /**
- * One Worker for the whole site: the tool hub at `/`, each tool's pages under
- * `/<tool>/`, and each tool's API under `/api/<tool>/`.
+ * API router for the whole site: each tool's API lives under `/api/<tool>/`.
+ * Reached through `functions/api/[[path]].js`; pages themselves are static
+ * files in `site/`, served by Cloudflare Pages directly.
  *
  * Adding a tool:
  *   1. put its page in `site/<tool>/`
- *   2. put its backend in `worker/src/<tool>.js`, exporting a default `fetch(request, env, ctx)`
+ *   2. put its backend in `api/<tool>.js`, exporting a default `fetch(request, env, ctx)`
  *   3. import it here and route `/api/<tool>/...` to it
  *   4. add a card on the hub (`site/index.html`)
  */
@@ -32,8 +33,7 @@ export default {
       return json({ error: "Not found" }, 404);
     }
 
-    // Everything else is the static site: hub at /, tools at /<tool>/.
-    if (env.ASSETS) return env.ASSETS.fetch(request);
+    // Only /api/* reaches this function, so anything else is a bug.
     return new Response("Not found", { status: 404 });
   },
 };

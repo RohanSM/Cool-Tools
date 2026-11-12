@@ -59,6 +59,7 @@
     cancelRequested: false,
     media: null,
     activeSegment: -1,
+    uploadXhr: null,
   };
 
   /* ---------------- helpers ---------------- */
@@ -217,21 +218,58 @@
 
   /* ---------------- upload ---------------- */
 
-  function upload() {
-    return new Promise((resolve, reject) => {
-      const query = new URLSearchParams({
-        language: state.language,
-        filename: state.file.name,
-        size: String(state.file.size),
-        words: String(state.wordsPerLine),
-      });
+  // The server keeps the file in pieces of at most 20 MB, so it never has to
+  // hold the whole thing in memory. Each piece goes up in order.
+  async function upload() {
+    const query = new URLSearchParams({
+      language: state.language,
+      filename: state.file.name,
+      size: String(state.file.size),
+      words: String(state.wordsPerLine),
+    });
 
+    const job = await createJob(query);
+    const total = state.file.size;
+
+    for (let n = 0; n < job.parts; n++) {
+      if (state.cancelRequested) throw new Error("Upload cancelled.");
+      const start = n * job.partSize;
+      const piece = state.file.slice(start, Math.min(start + job.partSize, total));
+      await sendPiece(job.id, n, piece, job.uploadToken, start, total);
+    }
+
+    if (state.cancelRequested) throw new Error("Upload cancelled.");
+    await beginJob(job.id, job.uploadToken);
+    return { id: job.id };
+  }
+
+  async function createJob(query) {
+    let res;
+    try {
+      res = await fetch(`${API}/api/transcriber/jobs?${query}`, {
+        method: "POST",
+        headers: { "content-type": state.file.type || "application/octet-stream" },
+      });
+    } catch (_) {
+      throw new Error(unreachableMessage());
+    }
+    const body = await res.json().catch(() => null);
+    if (!res.ok || !body || !body.id) {
+      throw new Error((body && body.error) || describeStatus(res.status));
+    }
+    return body;
+  }
+
+  function sendPiece(id, index, blob, token, offset, total) {
+    return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
-      xhr.open("POST", `${API}/api/transcriber/jobs?${query}`);
+      state.uploadXhr = xhr;
+      xhr.open("PUT", `${API}/api/transcriber/jobs/${id}/part/${index}`);
+      xhr.setRequestHeader("x-upload-token", token);
       xhr.setRequestHeader("content-type", state.file.type || "application/octet-stream");
       xhr.upload.onprogress = (e) => {
         if (!e.lengthComputable) return;
-        const pct = e.loaded / e.total;
+        const pct = Math.min(1, (offset + e.loaded) / total);
         el.barFill.style.width = `${Math.max(3, pct * 100)}%`;
         el.progressTitle.textContent = `Uploading your file… ${Math.round(pct * 100)}%`;
       };
@@ -242,24 +280,46 @@
         } catch (_) {
           /* ignore */
         }
-        if (xhr.status >= 200 && xhr.status < 300 && body && body.id) resolve(body);
+        state.uploadXhr = null;
+        if (xhr.status >= 200 && xhr.status < 300) resolve();
         else reject(new Error((body && body.error) || describeStatus(xhr.status)));
       };
-      xhr.onerror = () => reject(new Error(unreachableMessage()));
-      xhr.onabort = () => reject(new Error("Upload cancelled."));
-      xhr.send(state.file);
+      xhr.onerror = () => {
+        state.uploadXhr = null;
+        reject(new Error(unreachableMessage()));
+      };
+      xhr.onabort = () => {
+        state.uploadXhr = null;
+        reject(new Error("Upload cancelled."));
+      };
+      xhr.send(blob);
     });
+  }
+
+  async function beginJob(id, token) {
+    let res;
+    try {
+      res = await fetch(`${API}/api/transcriber/jobs/${id}/start`, {
+        method: "POST",
+        headers: { "x-upload-token": token },
+      });
+    } catch (_) {
+      throw new Error(unreachableMessage());
+    }
+    const body = await res.json().catch(() => null);
+    if (!res.ok) throw new Error((body && body.error) || describeStatus(res.status));
+    return body;
   }
 
   function unreachableMessage() {
     if (location.protocol === "file:") {
-      return "This page was opened as a file, so there's no server behind the button. Open the app's own address instead — the Worker URL after deploying, or http://localhost:8787 while running it locally.";
+      return "This page was opened as a file, so there's no server behind the button. Open the app's own address instead — the site URL after deploying, or http://localhost:8788 while running it locally.";
     }
-    if (!API && /^(localhost|127\.0\.0\.1)$/.test(location.hostname) && location.port !== "8787") {
-      return "This page is being served by something other than the app, so the button has nothing to call. Run `wrangler dev` in the worker folder and open http://localhost:8787.";
+    if (!API && /^(localhost|127\.0\.0\.1)$/.test(location.hostname) && location.port !== "8788") {
+      return "This page is being served by something other than the app, so the button has nothing to call. Run `npm run dev` in the project folder and open http://localhost:8788.";
     }
     if (!API && /^(localhost|127\.0\.0\.1)$/.test(location.hostname)) {
-      return "The Worker has stopped answering. Check the `wrangler dev` terminal for the error, then reload this page.";
+      return "The server has stopped answering. Check the `npm run dev` terminal for the error, then reload this page.";
     }
     return "We couldn't reach the server. Check your connection and try again in a moment.";
   }
@@ -392,6 +452,10 @@
     stopClock();
     clearTimeout(state.pollTimer);
     state.cancelRequested = true;
+    if (state.uploadXhr) {
+      state.uploadXhr.abort();
+      state.uploadXhr = null;
+    }
     if (state.objectUrl) {
       URL.revokeObjectURL(state.objectUrl);
       state.objectUrl = null;

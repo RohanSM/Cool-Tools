@@ -3,18 +3,24 @@
 One site, several small tools. Today there is one: **Transcript Studio**, which
 turns a video or audio file into a subtitle file.
 
-Everything runs as a **single Cloudflare Worker**: it serves the hub page, every
-tool's page, and every tool's API from one URL. You do not need Cloudflare Pages
-or a second deployment when you add a tool.
+Everything runs as **one Cloudflare Pages project** at
+`https://coolaitools.pages.dev`: Pages serves the hub, each tool's page, and
+runs the API in `functions/`. One project, one address, no server to babysit.
 
 ```
-browser ──upload──▶ Worker ──store──▶ R2
-                       │
-                       └── repository_dispatch ──▶ GitHub Actions
-                                                       │ downloads + transcribes
-                                                       ▼
-                    browser ◀── poll ── Worker ◀── POST result ──┘
+browser ──upload in 20 MB pieces──▶ Pages Function ──store──▶ KV (free tier)
+                                         │
+                                         └── repository_dispatch ──▶ GitHub Actions
+                                                                        │ download + stitch
+                                                                        │ transcribe
+                                                                        ▼
+                                    browser ◀── poll ── API ◀── POST result ──┘
 ```
+
+**No R2, no card.** R2 asks for a payment method even inside its free allowance,
+so the upload is kept in Workers KV instead, in pieces of up to 20 MB (KV caps a
+single value at 25 MB). Pages, Functions, KV and GitHub Actions all have
+genuinely card-free tiers.
 
 ## Layout
 
@@ -25,18 +31,20 @@ site/                         the front end (plain HTML/CSS/JS, no build step)
   transcriber/                one tool
     index.html
     app.js
-    config.js                 apiBase ("" = same origin as the Worker)
-worker/
-  src/index.js                router: /api/<tool>/… and serves site/
-  src/transcriber.js          the transcriber's API
-  src/http.js                 shared JSON/CORS helpers
-  wrangler.toml               Worker config + bindings
-  package.json                npm run dev / deploy
+    config.js                 apiBase ("" = same origin as the site)
+functions/
+  api/[[path]].js             Pages entry: every /api/… request starts here
+api/                          the server-side code
+  router.js                   sends /api/<tool>/… to the right tool
+  transcriber.js              the transcriber's API
+  http.js                     shared JSON/CORS helpers
 transcribe/
   transcribe.py               Whisper pipeline
   requirements.txt
 .github/workflows/
   transcribe.yml              the job that runs transcribe.py
+wrangler.toml                 Pages project config + KV binding + vars
+package.json                  npm run dev / deploy
 ```
 
 URL map once deployed: `/` hub, `/transcriber/` the tool, `/api/transcriber/…`
@@ -49,164 +57,136 @@ its API, `/api/health` a status check.
 You need: a GitHub account, a Cloudflare account (free plan is fine), and
 Node.js 20 or newer installed on your computer.
 
-## Part 1 — Put the project on GitHub
+## Part 1 — The GitHub repo
 
-1. Create a new repository. **Public is strongly recommended**: a private repo
-   on the free plan has 2,000 Actions minutes a month, and one 10-minute video
-   can burn several hundred of them. Public repos get unlimited minutes.
+Already done: <https://github.com/RohanSM/Cool-Tools>. It must stay **public**
+so Actions minutes are free.
 
-2. Upload this folder's contents to the repo root. The repo should end up with
-   `site/`, `worker/`, `transcribe/`, `.github/`, `README.md` at the top level —
-   **not** a folder named after this project containing those.
-
-   - **Web upload:** in the empty repo, click *uploading an existing file*, then
-     drag in the files and folders. On Windows, turn on *View → Show → Hidden
-     items* first, otherwise `.github` and `.gitignore` are invisible and the
-     workflow won't exist.
-   - **Or with git**, from this folder:
-
-     ```bash
-     git init
-     git add .
-     git commit -m "Cool Tools: transcript tool"
-     git branch -M main
-     git remote add origin https://github.com/YOUR-NAME/YOUR-REPO.git
-     git push -u origin main
-     ```
-
-3. Open the repo's **Actions** tab and make sure workflows are enabled (GitHub
-   shows an "I understand my workflows, go ahead and enable them" button for
-   uploads done through the web UI). You should see **Transcribe** in the list.
+The workflow at `.github/workflows/transcribe.yml` is what actually transcribes,
+so check the repo's **Actions** tab lists **Transcribe**. If it doesn't, the
+workflow file didn't upload (turn on *View → Show → Hidden items* on Windows and
+upload `.github/` again).
 
 ## Part 2 — Create the GitHub token
 
-This lets the Worker start a workflow run.
+This lets the site start a workflow run.
 
 1. GitHub → your avatar → **Settings → Developer settings → Personal access
    tokens → Fine-grained tokens → Generate new token**.
-2. *Repository access*: **Only select repositories** → pick your repo.
+2. *Repository access*: **Only select repositories** → `RohanSM/Cool-Tools`.
 3. *Permissions → Repository permissions*: set **Contents** to **Read and
    write**. That's the one that matters — `repository_dispatch` is rejected
-   without write access to Contents. (Classic tokens instead of fine-grained:
-   the `repo` scope works.)
-4. Generate and copy the token (`github_pat_…`). You'll paste it in Part 3, step 5.
+   without write access to Contents. (A classic token with the `repo` scope also
+   works.)
+4. Generate and copy the token (`github_pat_…`). You'll paste it in Part 3.
 
-## Part 3 — Deploy the Worker to Cloudflare
+## Part 3 — Deploy to Cloudflare Pages
 
-All commands run in the `worker/` folder.
+All commands run in the project folder (where `wrangler.toml` lives).
 
 ```bash
-cd worker
 npm install              # installs wrangler locally
 npx wrangler login       # opens the browser, pick your account
 ```
 
-1. **Create the file bucket** (R2):
-
-   ```bash
-   npx wrangler r2 bucket create tool-uploads
-   ```
-
-   R2's free tier covers 10 GB of storage, which is plenty for this.
-
-2. **Create the job store** (KV):
+1. **Create the store** (KV) — free, no card:
 
    ```bash
    npx wrangler kv namespace create JOBS
    ```
 
-   It prints an `id = "…"`. Open `worker/wrangler.toml` and replace
+   It prints an `id = "…"`. Open `wrangler.toml` and replace
    `PASTE_YOUR_KV_NAMESPACE_ID_HERE` with that value.
 
-3. **Point it at your repo.** In the same file, set:
+2. **Create the Pages project:**
 
-   ```toml
-   GITHUB_REPO = "YOUR-NAME/YOUR-REPO"
+   ```bash
+   npx wrangler pages project create coolaitools --production-branch main
    ```
 
-4. **Check the config** looks right:
+   `coolaitools` becomes `coolaitools.pages.dev`. If the name is taken,
+   Cloudflare says so — pick another and change `name =` in `wrangler.toml` to
+   match, since the address follows the project name.
+
+3. **Store the token as a secret** (paste it when prompted):
+
+   ```bash
+   npx wrangler pages secret put GITHUB_TOKEN --project-name coolaitools
+   ```
+
+4. **Check `wrangler.toml`** — it should read:
 
    ```toml
-   name = "cool-tools"          # becomes cool-tools.<you>.workers.dev
-   main = "src/index.js"
-
-   [assets]
-   directory = "../site"        # the whole site is uploaded with the Worker
-
-   [[r2_buckets]]
-   binding = "BUCKET"
-   bucket_name = "tool-uploads"
+   name = "coolaitools"                 # the pages.dev address
+   pages_build_output_dir = "site"      # everything in site/ is the website
+   compatibility_date = "2025-10-01"
 
    [[kv_namespaces]]
    binding = "JOBS"
    id = "…"
 
    [vars]
-   GITHUB_REPO = "YOUR-NAME/YOUR-REPO"
+   GITHUB_REPO = "RohanSM/Cool-Tools"
    MAX_UPLOAD_MB = "100"
    ```
 
-5. **Store the token as a secret** (paste it when prompted):
-
-   ```bash
-   npx wrangler secret put GITHUB_TOKEN
-   ```
-
-6. **Deploy:**
+5. **Deploy:**
 
    ```bash
    npm run deploy
    ```
 
-   Wrangler prints a URL like `https://cool-tools.YOUR-NAME.workers.dev`.
-   The URL may differ from the `name` in the config if that name is taken —
-   use whatever it prints.
+   It prints the live address, normally `https://coolaitools.pages.dev`.
 
-7. **Test it.** Visit `https://YOUR-URL/api/health`. You should see:
+6. **Test it.** Visit `https://coolaitools.pages.dev/api/health`:
 
    ```json
-   { "ok": true, "tools": ["transcriber"], "repo": "YOUR-NAME/YOUR-REPO" }
+   { "ok": true, "tools": ["transcriber"], "repo": "RohanSM/Cool-Tools" }
    ```
 
-   Then open the root URL, pick **Transcript Studio**, and upload a short clip.
+   Then open the root address, pick **Transcript Studio**, and upload a short
+   clip.
 
-Every later change: `npm run deploy` again. The site and the API deploy
-together, so the hub, the tools, and their endpoints never drift apart.
+Every later change: `npm run deploy` again. Pages replaces the whole site and
+the API together, so they never drift apart.
+
+If `/api/health` 500s or says the server isn't configured, the secret or the
+`GITHUB_REPO` var didn't land. Check **Pages → coolaitools → Settings →
+Variables and secrets**, and the KV binding under **Settings → Functions**.
 
 ## Running it locally
 
 ```bash
-cd worker
 npm install
-npx wrangler dev
+npm run dev            # wrangler pages dev
 ```
 
-Open <http://localhost:8787>. To let it actually dispatch jobs, create
-`worker/.dev.vars` (never commit it — `.gitignore` already excludes it):
+Open <http://localhost:8788>. Pages serves `site/`, runs `functions/`, and gives
+the API a local KV store, so uploads really work without touching production.
+
+To let local runs dispatch real jobs, create `.dev.vars` in the project folder
+(never commit it — `.gitignore` already excludes it):
 
 ```ini
 GITHUB_TOKEN=github_pat_…
-GITHUB_REPO=YOUR-NAME/YOUR-REPO
+GITHUB_REPO=RohanSM/Cool-Tools
 ```
-
-`wrangler dev` needs the KV id from Part 3 filled in. Local R2 and KV data is
-fake and lives in `.wrangler/`, which is ignored.
 
 **Do not open `site/index.html` by double-clicking it.** A `file://` page has no
 server behind it, so the upload button fails by design; the site always has to be
-loaded through the Worker URL or `localhost:8787`.
+served — `npm run dev`, or the deployed address.
 
 ## Adding another tool later
 
 1. Put its page in `site/<tool>/index.html` (link `../styles.css`).
-2. Put its backend in `worker/src/<tool>.js`, exporting
+2. Put its backend in `api/<tool>.js`, exporting
    `export default { async fetch(request, env, ctx) { … } }`.
-3. In `worker/src/index.js`, import it, route
-   `/api/<tool>/…` to it, and add the name to `TOOLS`.
+3. In `api/router.js`, import it, route `/api/<tool>/…` to it, and add the name
+   to `TOOLS`.
 4. Add a card for it on the hub, `site/index.html`.
-5. If it needs GitHub Actions, add `repository_dispatch` type to a workflow —
-   `transcribe.yml` is the pattern.
-6. `npm run deploy` once. Same URL, same bindings, same KV/R2.
+5. If it needs GitHub Actions, add a workflow with a `repository_dispatch` type
+   — `transcribe.yml` is the pattern.
+6. `npm run deploy` once. Same address, same bindings, same KV.
 
 ---
 
@@ -263,29 +243,36 @@ emit romanised Hinglish under the English token.
 
 ## Limits and notes
 
-- **100 MB per upload** (Cloudflare's request body cap on the free plan). Longer
-  files are fine if they're compressed — audio-only MP3/M4A goes a long way.
+- **100 MB per upload**, sent as pieces of 20 MB or less. Longer files are fine
+  if they're compressed — audio-only MP3/M4A goes a long way.
+- **Free KV limits:** 1 GB stored, 1,000 writes and 100,000 reads a day. A 100 MB
+  upload costs about 7 writes, so roughly 140 uploads a day fit; storage caps out
+  around 10 files in flight, and everything expires after 24 hours anyway.
 - **Job timeout is 180 minutes**; the queue is GitHub Actions, so the first run
   of the day takes ~60–90 s longer while the model downloads.
 - **A runner has no GPU.** On 4 CPU cores, Apex runs at roughly 2–4× realtime.
-- Uploads and results are deleted after 24 hours (`JOB_TTL`).
-- Rate limit: 20 uploads/hour per IP (`RATE_LIMIT` in `worker/src/transcriber.js`).
-- If you ever host the pages somewhere other than this Worker, set `apiBase` in
-  `site/transcriber/config.js` to the Worker URL.
+- Uploads and results are deleted after 24 hours (`JOB_TTL`), and the pieces are
+  deleted the moment a transcript comes back.
+- Rate limit: 20 uploads/hour per IP (`RATE_LIMIT` in `api/transcriber.js`).
+- If you ever host the pages somewhere other than this project, set `apiBase` in
+  `site/transcriber/config.js` to the API address.
 
 ## When something breaks
 
 | What you see | Cause |
 | --- | --- |
-| "This page was opened as a file…" | You double-clicked `index.html`. Open the Worker URL instead. |
-| "Nothing is answering at this address" | `wrangler dev` isn't running, or you opened the page on a different port than 8787 |
-| "Server is not configured yet" | `GITHUB_TOKEN` or `GITHUB_REPO` is missing from the Worker |
-| Upload works, job never starts | The token lacks **Contents: read & write**, or the repo name is wrong. Check the Worker's logs: `npm run tail` |
+| "This page was opened as a file…" | You double-clicked `index.html`. Use `npm run dev` or the live address. |
+| "Nothing is answering at this address" | `npm run dev` isn't running, or the page is on a port other than 8788 |
+| "Server is not configured yet" | `GITHUB_TOKEN` or `GITHUB_REPO` is missing from the Pages project |
+| Upload works, job never starts | The token lacks **Contents: read & write**, or `GITHUB_REPO` is wrong. Check the logs: `npm run tail` |
 | Job sits in "Waiting in line" | Look at the repo's Actions tab — the run either failed or the workflow isn't on the default branch |
+| Job fails at "Fetch the uploaded file" | The KV pieces never became readable. Re-run the job from the Actions tab; KV can take up to a minute to show a fresh upload |
+| 404 on any page | `pages_build_output_dir` in `wrangler.toml` must be `site`, and the folder must contain `index.html` |
 
 ## Renaming
 
 The site name "Cool Tools" appears in `site/index.html` and in the transcriber's
 top bar (`site/transcriber/index.html`). The tool itself is "Transcript Studio"
-in `site/transcriber/index.html`. The Worker name — and therefore the URL — is
-`name` in `worker/wrangler.toml`.
+in `site/transcriber/index.html`. The project name — and therefore the
+`pages.dev` address — is `name` in `wrangler.toml`; changing it needs a new
+`wrangler pages project create`.
