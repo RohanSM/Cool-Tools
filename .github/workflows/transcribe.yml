@@ -1,0 +1,84 @@
+name: Transcribe
+
+# Triggered by the Cloudflare Worker (repository_dispatch).
+on:
+  repository_dispatch:
+    types: [transcribe]
+
+permissions:
+  contents: read
+
+jobs:
+  transcribe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch the uploaded file
+        env:
+          SOURCE_URL: ${{ github.event.client_payload.sourceUrl }}
+        run: |
+          mkdir -p work
+          curl -fsSL --retry 3 --retry-delay 5 -o work/input "$SOURCE_URL"
+          ls -lh work/input
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: transcribe/requirements.txt
+
+      - name: Install ffmpeg
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+
+      - name: Install PyTorch (CPU build)
+        run: pip install --index-url https://download.pytorch.org/whl/cpu torch
+
+      - name: Install Python dependencies
+        run: pip install -r transcribe/requirements.txt
+
+      # Model weights are ~1.5 GB for Hinglish; caching keeps repeat runs quick.
+      - name: Cache the speech model
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-${{ github.event.client_payload.language }}-v1
+
+      - name: Transcribe
+        env:
+          LANGUAGE: ${{ github.event.client_payload.language }}
+          WORDS: ${{ github.event.client_payload.wordsPerLine }}
+          CALLBACK_URL: ${{ github.event.client_payload.callbackUrl }}
+          CALLBACK_TOKEN: ${{ github.event.client_payload.callbackToken }}
+        run: |
+          python transcribe/transcribe.py \
+            --input work/input \
+            --outdir work/out \
+            --language "$LANGUAGE" \
+            --words-per-line "${WORDS:-5}" \
+            --callback-url "$CALLBACK_URL" \
+            --callback-token "$CALLBACK_TOKEN"
+
+      # Handy for debugging a failed run; safe to remove.
+      - name: Save transcript artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: transcript-${{ github.event.client_payload.jobId }}
+          path: work/out
+          retention-days: 3
+          if-no-files-found: ignore
+
+      - name: Report failure to the site
+        if: failure()
+        env:
+          CALLBACK_URL: ${{ github.event.client_payload.callbackUrl }}
+          CALLBACK_TOKEN: ${{ github.event.client_payload.callbackToken }}
+        run: |
+          curl -fsS -X POST "$CALLBACK_URL" \
+            -H "content-type: application/json" \
+            -H "x-callback-token: $CALLBACK_TOKEN" \
+            -d '{"status":"failed","error":"The transcription step failed. The file may be too long or in an unsupported format."}' \
+            || true
