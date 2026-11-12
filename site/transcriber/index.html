@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Transcript Studio — video & audio to subtitles</title>
+<meta name="description" content="Upload a video or audio file and get a clean subtitle file with timestamps, plus word-by-word timing." />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="../styles.css" />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='26' fill='%235b46f0'/><path d='M28 56v-12M40 68V32M52 62V38M64 72V28M76 56V44' stroke='white' stroke-width='7' stroke-linecap='round'/></svg>" />
+</head>
+<body>
+<div class="glow glow-a"></div>
+<div class="glow glow-b"></div>
+
+<header class="topbar">
+  <a class="brand" href="../index.html">
+    <span class="brand-mark" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none"><path d="M4 14v-4M8 17V7M12 15V9M16 18V6M20 14v-4" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+    </span>
+    <span class="brand-name">Transcript Studio</span>
+  </a>
+  <a class="topbar-note topbar-link" href="../index.html">← All tools</a>
+</header>
+
+<main>
+  <section class="hero">
+    <h1>Turn any video or audio into <span class="hl">subtitles</span>.</h1>
+    <p class="hero-sub">Upload a file, choose the language, and download a ready-to-use subtitle file — with every word timed if you need it.</p>
+  </section>
+
+  <section class="panel" id="uploadPanel">
+    <div class="step-row">
+      <span class="step-badge">1</span>
+      <div>
+        <h2>Add your file</h2>
+        <p class="step-help">Drag it in, or browse your device.</p>
+      </div>
+    </div>
+
+    <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="Choose a video or audio file">
+      <div class="dz-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none"><path d="M12 16V4m0 0L8 8m4-4 4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+      </div>
+      <p class="dz-title">Drop your video or audio here</p>
+      <p class="dz-sub">or <span class="link">choose a file</span></p>
+      <p class="dz-formats">MP4, MOV, MKV, MP3, WAV, M4A · up to 100 MB</p>
+      <input type="file" id="fileInput" accept="video/*,audio/*,.mkv,.m4a,.wav,.mp3,.mp4,.mov" hidden />
+    </div>
+
+    <div class="file-chip" id="fileChip" hidden>
+      <span class="file-chip-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none"><path d="m9 18 6-12M9 18H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h3m-1.5 6h9" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+      </span>
+      <span class="file-chip-name" id="fileName">file.mp4</span>
+      <span class="file-chip-size" id="fileSize"></span>
+      <button class="icon-btn" id="clearFile" type="button" aria-label="Remove file">
+        <svg viewBox="0 0 24 24" fill="none"><path d="m6 6 12 12M18 6 6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      </button>
+    </div>
+
+    <div class="divider"></div>
+
+    <div class="step-row">
+      <span class="step-badge">2</span>
+      <div>
+        <h2>Pick the spoken language</h2>
+        <p class="step-help">Choose what you hear in the recording.</p>
+      </div>
+    </div>
+
+    <div class="segmented" id="languageOptions" role="radiogroup" aria-label="Spoken language">
+      <button type="button" class="seg is-active" data-value="hinglish" role="radio" aria-checked="true">
+        <span class="seg-title">Hinglish</span>
+        <span class="seg-sub">Hindi spoken, written in English letters</span>
+      </button>
+      <button type="button" class="seg" data-value="english" role="radio" aria-checked="false">
+        <span class="seg-title">English</span>
+        <span class="seg-sub">Plain English, word for word</span>
+      </button>
+    </div>
+
+    <div class="divider"></div>
+
+    <div class="step-row">
+      <span class="step-badge">3</span>
+      <div>
+        <h2>How should the timestamps work?</h2>
+        <p class="step-help">Both files are always included — this just sets the view you land on.</p>
+      </div>
+    </div>
+
+    <div class="segmented segmented-tight" id="timingOptions" role="radiogroup" aria-label="Timestamp style">
+      <button type="button" class="seg is-active" data-value="line" role="radio" aria-checked="true">
+        <span class="seg-title">Whole lines</span>
+        <span class="seg-sub">One timing for each line</span>
+      </button>
+      <button type="button" class="seg" data-value="word" role="radio" aria-checked="false">
+        <span class="seg-title">Every word</span>
+        <span class="seg-sub">Each word gets its own timing</span>
+      </button>
+    </div>
+
+    <div class="divider"></div>
+
+    <div class="step-block" id="wordsStep">
+      <div class="step-row">
+        <span class="step-badge">4</span>
+        <div>
+          <h2>How many words fit on a line?</h2>
+          <p class="step-help">5 is a good default. Pick a smaller number for short, snappy lines.</p>
+        </div>
+      </div>
+
+      <div class="segmented segmented-words" id="wordsOptions" role="radiogroup" aria-label="Words per line">
+        <button type="button" class="seg" data-value="1" role="radio" aria-checked="false"><span class="seg-title">1</span></button>
+        <button type="button" class="seg" data-value="2" role="radio" aria-checked="false"><span class="seg-title">2</span></button>
+        <button type="button" class="seg" data-value="3" role="radio" aria-checked="false"><span class="seg-title">3</span></button>
+        <button type="button" class="seg" data-value="4" role="radio" aria-checked="false"><span class="seg-title">4</span></button>
+        <button type="button" class="seg is-active" data-value="5" role="radio" aria-checked="true"><span class="seg-title">5</span></button>
+      </div>
+      <p class="words-hint" id="wordsHint">A new line starts every 5 words, and lines still end on a comma or full stop whenever one is nearby.</p>
+    </div>
+
+    <button class="primary-btn" id="submitBtn" type="button" disabled>
+      <span>Make subtitles</span>
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 12h13m0 0-5-5m5 5-5 5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+    <p class="fine-print">Your file is deleted automatically after 24 hours.</p>
+  </section>
+
+  <section class="panel progress-panel" id="progressPanel" hidden aria-live="polite">
+    <div class="progress-head">
+      <div class="spinner" id="spinner"></div>
+      <div>
+        <h2 id="progressTitle">Uploading your file…</h2>
+        <p class="step-help" id="progressSub">Keep this tab open and we'll tell you the moment it's ready.</p>
+      </div>
+    </div>
+    <div class="bar"><div class="bar-fill" id="barFill"></div></div>
+    <ol class="stages" id="stages">
+      <li data-stage="upload"><span></span>File uploaded</li>
+      <li data-stage="queue"><span></span>Waiting in line</li>
+      <li data-stage="work"><span></span>Listening and writing</li>
+      <li data-stage="done"><span></span>Ready</li>
+    </ol>
+    <div class="progress-foot">
+      <span id="elapsed">Just started</span>
+      <button class="ghost-btn" id="cancelBtn" type="button">Cancel</button>
+    </div>
+  </section>
+
+  <section class="panel result-panel" id="resultPanel" hidden>
+    <div class="result-head">
+      <div>
+        <div class="done-pill"><svg viewBox="0 0 24 24" fill="none"><path d="m5 13 4 4 10-10" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg> Done</div>
+        <h2>Your transcript is ready</h2>
+        <p class="step-help" id="resultMeta">—</p>
+      </div>
+      <button class="ghost-btn" id="newFileBtn" type="button">New file</button>
+    </div>
+
+    <div class="player-wrap">
+      <div id="playerHolder"></div>
+      <p class="player-hint">Tap any line to jump to that moment.</p>
+    </div>
+
+    <div class="result-tools">
+      <div class="tabs" role="tablist">
+        <button class="tab is-active" data-view="line" role="tab" aria-selected="true">Timed script</button>
+        <button class="tab" data-view="word" role="tab" aria-selected="false">Word by word</button>
+      </div>
+      <div class="tool-actions">
+        <button class="ghost-btn" id="copyBtn" type="button">
+          <svg viewBox="0 0 24 24" fill="none"><rect x="9" y="9" width="11" height="11" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M15 5.5A2.5 2.5 0 0 0 12.5 3H6.5A2.5 2.5 0 0 0 4 5.5v6A2.5 2.5 0 0 0 6.5 14" stroke="currentColor" stroke-width="1.8"/></svg>
+          Copy text
+        </button>
+      </div>
+    </div>
+
+    <div class="transcript" id="transcriptView"></div>
+
+    <div class="downloads">
+      <p class="downloads-title">Download</p>
+      <div class="download-grid">
+        <button class="download-btn" id="dlSrt" type="button">
+          <span class="dl-icon"><svg viewBox="0 0 24 24" fill="none"><path d="M12 4v11m0 0 4-4m-4 4-4-4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M5 19h14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></span>
+          <span><strong>Subtitles (.srt)</strong><small>One timestamp per line — for YouTube, Premiere, CapCut</small></span>
+        </button>
+        <button class="download-btn" id="dlWords" type="button">
+          <span class="dl-icon"><svg viewBox="0 0 24 24" fill="none"><path d="M4 7h16M4 12h10M4 17h13" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></span>
+          <span><strong>Word-by-word (.srt)</strong><small>Each word has its own timing</small></span>
+        </button>
+        <button class="download-btn" id="dlTxt" type="button">
+          <span class="dl-icon"><svg viewBox="0 0 24 24" fill="none"><path d="M7 4h7l5 5v11a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Z" stroke="currentColor" stroke-width="1.7"/><path d="M13 4v5h5" stroke="currentColor" stroke-width="1.7"/></svg></span>
+          <span><strong>Plain text (.txt)</strong><small>Just the words, no timestamps</small></span>
+        </button>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel error-panel" id="errorPanel" hidden>
+    <h2>That didn't work</h2>
+    <p id="errorText">Something went wrong.</p>
+    <button class="primary-btn" id="retryBtn" type="button"><span>Try again</span></button>
+  </section>
+
+  <section class="faq">
+    <details>
+      <summary>What does "Hinglish" mean here?</summary>
+      <p>Hindi speech written in English letters — like <em>"mujhe kal meeting hai"</em> instead of <em>"मुझे कल मीटिंग है"</em>.</p>
+    </details>
+    <details>
+      <summary>How long does it take?</summary>
+      <p>Roughly a few minutes for a 10-minute clip. Longer files take longer — you can leave the tab open; we'll show the result the moment it's finished.</p>
+    </details>
+    <details>
+      <summary>Which file shows one word at a time?</summary>
+      <p>The word-by-word <strong>.srt</strong>. Every word has its own start and end time, so apps that highlight or show the current word will work with it.</p>
+    </details>
+  </section>
+</main>
+
+<footer>
+  <p>Built with Whisper. Files are removed automatically after 24 hours.</p>
+</footer>
+
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
