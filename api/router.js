@@ -22,7 +22,13 @@ export default {
     if (request.method === "OPTIONS") return preflight();
 
     if (url.pathname === "/api/health") {
-      return json({ ok: true, tools: TOOLS, repo: env.GITHUB_REPO || null });
+      return json({
+        ok: true,
+        tools: TOOLS,
+        repo: env.GITHUB_REPO || null,
+        storage: !!env.JOBS,
+        github: !!env.GITHUB_TOKEN,
+      });
     }
 
     if (url.pathname.startsWith("/api/transcriber/")) {

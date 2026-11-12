@@ -15,7 +15,7 @@ compatibility_date = "2025-10-01"
 # It holds the job records, the uploaded pieces, and the finished transcripts.
 [[kv_namespaces]]
 binding = "JOBS"
-id = "PASTE_YOUR_KV_NAMESPACE_ID_HERE"
+id = "9db55d91070b4267928649a3ec4bfd59"
 
 [vars]
 # The repo that holds this project — the workflow lives there.
