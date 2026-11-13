@@ -50,7 +50,10 @@ DEFAULT_MODELS = {
 MODEL_ENV = {"hinglish": "HINGLISH_MODEL", "english": "ENGLISH_MODEL"}
 
 BEAMS = int(os.environ.get("BEAMS", "1"))
-BATCH = int(os.environ.get("BATCH", "8"))
+# A CPU runner has ~16 GB and no GPU: batching clips multiplies the per-token
+# state Whisper keeps for word timestamps, which OOM-killed the job at batch 2.
+# One clip at a time is barely slower here and keeps the peak around 6 GB.
+BATCH = int(os.environ.get("BATCH", "1"))
 
 # How the audio is cut for transcription (longer = more context = better accuracy)
 CHUNK_MIN = 8.0
@@ -356,12 +359,21 @@ def run_model(clips, model_id):
         attempt needs a fresh copy — reusing them turned a single real error into
         a cascade of "dict needs a raw key" failures.
         """
+        # Give the model a token budget that fits the audio. Without a cap it
+        # runs to `max_length` (448) even on a 10 s clip, and the timestamps it
+        # keeps along the way grow memory until the runner kills the job.
+        seconds = max(len(clip) for clip in batch) / SR
+        budget = 48 + int(10 * seconds)
+
         last = None
         while attempts:
             attempt = attempts[0]
+            options = {k: v for k, v in attempt.items() if k != "generate_kwargs"}
+            generate_kwargs = dict(attempt.get("generate_kwargs") or {})
+            generate_kwargs.setdefault("max_new_tokens", budget)
             try:
                 fresh = [{"raw": clip, "sampling_rate": SR} for clip in batch]
-                return asr(fresh, batch_size=len(fresh), **attempt)
+                return asr(fresh, batch_size=len(fresh), generate_kwargs=generate_kwargs, **options)
             except Exception as err:
                 last = err
                 attempts.pop(0)
