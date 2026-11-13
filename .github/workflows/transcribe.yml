@@ -100,7 +100,9 @@ jobs:
           if-no-files-found: ignore
 
       - name: Report failure to the site
-        if: failure()
+        # `cancelled()` matters: a cancelled run otherwise leaves the site
+        # polling a job that will never finish.
+        if: failure() || cancelled()
         env:
           CALLBACK_URL: ${{ github.event.client_payload.callbackUrl }}
           CALLBACK_TOKEN: ${{ github.event.client_payload.callbackToken }}
