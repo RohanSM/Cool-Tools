@@ -266,6 +266,44 @@ def estimate_words(lines):
 
 
 # ---------------------------------------------------------------- whisper
+
+# Fine-tuned Whisper checkpoints often ship without `alignment_heads`, which
+# Whisper needs for word-level timestamps. The heads describe the base model's
+# cross-attention, so borrow them from the checkpoint the model was fine-tuned
+# from. Without this, asking for word timestamps raises and we lose them.
+ALIGNMENT_BASE = {
+    "Oriserve/Whisper-Hindi2Hinglish-Apex": "openai/whisper-large-v3-turbo",
+    "Oriserve/Whisper-Hindi2Hinglish-Prime": "openai/whisper-large-v3",
+}
+
+
+def ensure_alignment_heads(asr, model_id):
+    """Return True when the pipeline can produce word-level timestamps."""
+    config = getattr(asr, "generation_config", None)
+    if config is None:
+        return False
+    if getattr(config, "alignment_heads", None):
+        return True
+
+    base_id = os.environ.get("ALIGNMENT_HEADS_MODEL") or ALIGNMENT_BASE.get(model_id)
+    if not base_id:
+        return False
+    try:
+        from transformers import GenerationConfig
+
+        heads = GenerationConfig.from_pretrained(base_id).alignment_heads
+        if not heads:
+            return False
+        config.alignment_heads = heads
+        if getattr(asr, "model", None) is not None:
+            asr.model.generation_config.alignment_heads = heads
+        log(f"word timings: borrowed alignment_heads from {base_id}")
+        return True
+    except Exception as err:
+        log(f"word timings unavailable: {err}")
+        return False
+
+
 def run_model(clips, model_id):
     import torch
     from transformers import pipeline
@@ -281,31 +319,43 @@ def run_model(clips, model_id):
         torch_dtype=dtype,
         device=device,
     )
-    inputs = [{"raw": clip, "sampling_rate": SR} for clip in clips]
+    word_timings = ensure_alignment_heads(asr, model_id)
     base = {"task": "transcribe", "num_beams": BEAMS}
 
     # Prefer word timestamps; fall back gracefully if this model/version can't.
-    attempts = [
-        {"return_timestamps": "word", "generate_kwargs": {**base, "language": "en"}},
-        {"return_timestamps": "word", "generate_kwargs": base},
-        {"generate_kwargs": {**base, "language": "en"}},
-        {"generate_kwargs": base},
-    ]
+    attempts = []
+    if word_timings:
+        attempts.append({"return_timestamps": "word", "generate_kwargs": {**base, "language": "en"}})
+        attempts.append({"return_timestamps": "word", "generate_kwargs": dict(base)})
+    attempts.append({"generate_kwargs": {**base, "language": "en"}})
+    attempts.append({"generate_kwargs": dict(base)})
 
-    def decode(batch_inputs, idx):
+    def decode(batch, idx):
+        """Try each attempt in turn, dropping the ones that fail for good.
+
+        The pipeline consumes the dicts it is given (`raw` is popped), so every
+        attempt needs a fresh copy — reusing them turned a single real error into
+        a cascade of "dict needs a raw key" failures.
+        """
         last = None
-        for attempt in attempts:
+        while attempts:
+            attempt = attempts[0]
             try:
-                return asr(batch_inputs, batch_size=len(batch_inputs), **attempt)
+                fresh = [{"raw": clip, "sampling_rate": SR} for clip in batch]
+                return asr(fresh, batch_size=len(fresh), **attempt)
             except Exception as err:
                 last = err
-                log(f"  piece {idx}: retrying without {list(attempt)} ({str(err)[:90]})")
+                attempts.pop(0)
+                first = str(err).strip().splitlines()[0] if str(err).strip() else type(err).__name__
+                log(f"  piece {idx}: {type(err).__name__}: {first}")
+                if attempts:
+                    log("  retrying without that option")
         raise last
 
     outs = []
-    for b in range(0, len(inputs), BATCH):
-        outs.extend(decode(inputs[b: b + BATCH], b))
-        log(f"  transcribed {min(b + BATCH, len(inputs))}/{len(inputs)} pieces")
+    for b in range(0, len(clips), BATCH):
+        outs.extend(decode(clips[b: b + BATCH], b))
+        log(f"  transcribed {min(b + BATCH, len(clips))}/{len(clips)} pieces")
 
     del asr
     gc.collect()
@@ -338,22 +388,33 @@ def build_srt(cues):
 
 # ---------------------------------------------------------------- callback
 def post_callback(url, token, payload):
+    """Post a status ping. Returns False only when the request was rejected."""
     if not url:
-        return
+        return None
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         url,
         data=data,
         method="POST",
-        headers={"content-type": "application/json", "x-callback-token": token or ""},
+        headers={
+            "content-type": "application/json",
+            "x-callback-token": token or "",
+            # Cloudflare's bot protection answers urllib's default
+            # `Python-urllib/3.x` user agent with "403 error code: 1010", which
+            # left every job stuck on "queued" even when transcription worked.
+            "user-agent": "transcript-studio/1.0 (+https://github.com/RohanSM/Cool-Tools)",
+            "accept": "application/json",
+        },
     )
     try:
         with urllib.request.urlopen(req, timeout=60) as resp:
             log(f"callback {payload.get('status')} -> {resp.status}")
+            return True
     except urllib.error.HTTPError as err:
         log(f"callback failed: {err.code} {err.read()[:200]!r}")
-    except Exception as err:  # never fail the job over a status ping
+    except Exception as err:  # a status ping must never crash the pipeline
         log(f"callback failed: {err}")
+    return False
 
 
 # ---------------------------------------------------------------- main
@@ -449,7 +510,7 @@ def main():
         if not text:
             raise RuntimeError("We couldn't hear any speech in that file.")
 
-        post_callback(
+        delivered = post_callback(
             args.callback_url,
             args.callback_token,
             {
@@ -464,6 +525,12 @@ def main():
                 },
             },
         )
+        # If the result never reaches the site the user just polls forever, so
+        # fail the run instead: the workflow then reports the failure with curl.
+        if delivered is False:
+            raise RuntimeError(
+                "The transcript was ready but couldn't be sent back to the site. Please try again."
+            )
     except subprocess.CalledProcessError as err:
         log(f"ffmpeg failed: {err}")
         post_callback(
