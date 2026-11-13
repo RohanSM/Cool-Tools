@@ -69,6 +69,25 @@ def log(msg):
     print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
+def watch_memory(interval=15):
+    """Log peak RSS now and then, so a job killed by the runner leaves a trace."""
+    try:
+        import resource
+        import threading
+
+        stop = threading.Event()
+
+        def loop():
+            while not stop.wait(interval):
+                peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+                log(f"  memory: {peak:.0f} MB peak")
+
+        threading.Thread(target=loop, daemon=True).start()
+        return stop
+    except Exception:
+        return None
+
+
 # ---------------------------------------------------------------- audio
 def to16k(src, dst):
     cmd = [
@@ -460,7 +479,10 @@ def main():
         slices = [(max(0.0, s - PAD), min(duration, e + PAD)) for s, e in groups]
         clips = [wave[int(a * SR): int(b * SR)] for a, b in slices]
 
+        mem = watch_memory()
         outs = run_model(clips, model_id)
+        if mem:
+            mem.set()
 
         lines, words = [], []
         last_text, repeat = None, 0
