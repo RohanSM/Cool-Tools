@@ -46,7 +46,7 @@
 
   const state = {
     file: null,
-    language: "hinglish",
+    language: null,
     timing: "line",
     view: "line",
     wordsPerLine: 5,
@@ -361,6 +361,10 @@
 
   async function startJob() {
     if (!state.file) return;
+    if (!state.language) {
+      toast("Please select a language (English or Hinglish).");
+      return;
+    }
     state.cancelRequested = false;
     state.result = null;
     showPanel("progress");

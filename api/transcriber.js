@@ -159,15 +159,17 @@ async function startJob(id, url, request, env) {
     return json({ error: "Forbidden" }, 403);
   }
 
-  const origin = url.origin;
+  const base = publicBase(url, env);
+  if (!base) return json({ error: LOCAL_ONLY_MESSAGE }, 409);
+
   const payload = {
     jobId: id,
     language: job.language,
     wordsPerLine: job.wordsPerLine,
     filename: job.filename,
     parts: job.parts,
-    sourceUrl: `${origin}${API}/jobs/${id}/source?token=${job.sourceToken}`,
-    callbackUrl: `${origin}${API}/jobs/${id}/complete`,
+    sourceUrl: `${base}${API}/jobs/${id}/source?token=${job.sourceToken}`,
+    callbackUrl: `${base}${API}/jobs/${id}/complete`,
     callbackToken: job.callbackToken,
   };
 
@@ -183,6 +185,27 @@ async function startJob(id, url, request, env) {
   job.queuedAt = Date.now();
   await saveJob(env, job);
   return json({ id: job.id, status: job.status });
+}
+
+const LOCAL_ONLY_MESSAGE =
+  "Transcribing runs on GitHub, and GitHub can't reach a server on your own computer. " +
+  "Open the live site to transcribe a file — the local server is only for checking the page and the upload.";
+
+/**
+ * The runner fetches the file and posts the result back over the public
+ * internet, so a localhost origin is useless to it: it has to be replaced by
+ * the deployed address (PUBLIC_BASE_URL) or a tunnel.
+ */
+function publicBase(url, env) {
+  const configured = (env.PUBLIC_BASE_URL || "").trim().replace(/\/+$/, "");
+  const base = configured || url.origin;
+  try {
+    const host = new URL(base).hostname;
+    if (/^(localhost|127\.0\.0\.1|0\.0\.0\.0|::1|\[::1\])$/i.test(host)) return null;
+  } catch (_) {
+    return null;
+  }
+  return base;
 }
 
 async function dispatch(env, payload) {

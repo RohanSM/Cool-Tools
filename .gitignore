@@ -8,3 +8,7 @@ __pycache__/
 *.pyc
 .venv/
 .DS_Store
+
+# Local-only scratch files: test clips and a token saved for `wrangler secret put
+token.txt
+*.mp4

@@ -164,12 +164,21 @@ npm run dev            # wrangler pages dev
 Open <http://localhost:8788>. Pages serves `site/`, runs `functions/`, and gives
 the API a local KV store, so uploads really work without touching production.
 
-To let local runs dispatch real jobs, create `.dev.vars` in the project folder
-(never commit it — `.gitignore` already excludes it):
+**Transcribing itself only works on the deployed site.** The job runs on a
+GitHub runner, which has to download the file and post the result back over the
+public internet, so it can never reach `localhost`. A local run gets as far as
+`queued` and then stops at "Fetch the uploaded file" with
+`could not connect to server` in the Actions log.
+
+That is expected: use `npm run dev` to check the page and the upload, and the
+live address to produce a transcript. If you do need real runs against your own
+machine, expose port 8788 with a tunnel and tell the API about it:
 
 ```ini
+# .dev.vars — never commit it, .gitignore already excludes it
 GITHUB_TOKEN=github_pat_…
 GITHUB_REPO=RohanSM/Cool-Tools
+PUBLIC_BASE_URL=https://your-tunnel-address.example
 ```
 
 **Do not open `site/index.html` by double-clicking it.** A `file://` page has no
@@ -263,6 +272,7 @@ emit romanised Hinglish under the English token.
 | --- | --- |
 | "This page was opened as a file…" | You double-clicked `index.html`. Use `npm run dev` or the live address. |
 | "Nothing is answering at this address" | `npm run dev` isn't running, or the page is on a port other than 8788 |
+| "Transcribing runs on GitHub, and GitHub can't reach a server on your own computer" | You started a job from `localhost`. Use the live address to transcribe — see [Running it locally](#running-it-locally) |
 | "Server is not configured yet" | `GITHUB_TOKEN` or `GITHUB_REPO` is missing from the Pages project |
 | Upload works, job never starts | The token lacks **Contents: read & write**, or `GITHUB_REPO` is wrong. Check the logs: `npm run tail` |
 | Job sits in "Waiting in line" | Look at the repo's Actions tab — the run either failed or the workflow isn't on the default branch |
