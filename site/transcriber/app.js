@@ -436,6 +436,26 @@
     el.progressTitle.textContent = "Ready!";
     setTimeout(() => {
       showPanel("result");
+      // --- edit before download ---
+      const existingText = state.result.text || state.segments.map(s => s.text).join(" ");
+      const textarea = document.createElement("textarea");
+      textarea.id = "editTranscript";
+      textarea.value = existingText;
+      textarea.style.width = "100%";
+      textarea.style.height = "150px";
+      textarea.style.marginBottom = "8px";
+      el.resultPanel.parentNode.insertBefore(textarea, el.resultMeta.nextSibling);
+
+      const applyBtn = document.createElement("button");
+      applyBtn.textContent = "Apply edits";
+      applyBtn.style.marginRight = "8px";
+      applyBtn.onclick = () => {
+        state.result.text = textarea.value;
+        // re‑render the download buttons so they use the edited text
+        el.dlSrt.onclick();
+      };
+      el.resultPanel.parentNode.insertBefore(applyBtn, el.resultMeta.nextSibling);
+
       buildPlayer();
       syncTabs();
       renderTranscript();
@@ -717,11 +737,13 @@
 
   el.dlSrt.addEventListener("click", () => {
     if (!state.result) return;
-    download(state.result.srt, `${baseName()}.srt`, "application/x-subrip;charset=utf-8");
+    const content = state.result.text || state.result.srt || "";
+    download(content, `${baseName()}.srt`, "application/x-subrip;charset=utf-8");
   });
   el.dlWords.addEventListener("click", () => {
     if (!state.result) return;
-    download(state.result.wordsSrt || state.result.srt, `${baseName()}-words.srt`, "application/x-subrip;charset=utf-8");
+    const content = state.result.wordsSrt || state.result.srt || "";
+    download(content, `${baseName()}-words.srt`, "application/x-subrip;charset=utf-8");
   });
   el.dlTxt.addEventListener("click", () => {
     if (!state.result) return;
