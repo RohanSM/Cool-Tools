@@ -459,6 +459,21 @@ main {
 .transcript::-webkit-scrollbar { width: 9px; }
 .transcript::-webkit-scrollbar-thumb { background: #e2dcee; border-radius: 9px; }
 
+.transcript-editor {
+  width: 100%;
+  min-height: 320px;
+  box-sizing: border-box;
+  border: 0;
+  outline: 0;
+  resize: vertical;
+  background: transparent;
+  font-family: inherit;
+  font-size: 15px;
+  line-height: 1.65;
+  color: var(--ink);
+  padding: 4px 8px;
+}
+
 .line {
   display: grid;
   grid-template-columns: 74px 1fr;

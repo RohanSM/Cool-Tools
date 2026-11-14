@@ -35,6 +35,7 @@
     playerHolder: $("playerHolder"),
     transcriptView: $("transcriptView"),
     newFileBtn: $("newFileBtn"),
+    editBtn: $("editBtn"),
     copyBtn: $("copyBtn"),
     dlSrt: $("dlSrt"),
     dlWords: $("dlWords"),
@@ -49,6 +50,7 @@
     language: null,
     timing: "line",
     view: "line",
+    editing: false,
     wordsPerLine: 5,
     jobId: null,
     result: null,
@@ -436,32 +438,6 @@
     el.progressTitle.textContent = "Ready!";
     setTimeout(() => {
       showPanel("result");
-      // --- edit before download ---
-      const existingLines = state.segments.map((s) => s.text).join("\n");
-      const textarea = document.createElement("textarea");
-      textarea.id = "editTranscript";
-      textarea.value = existingLines;
-      textarea.style.width = "100%";
-      textarea.style.height = "150px";
-      textarea.style.marginBottom = "8px";
-      textarea.placeholder = "Edit the transcript here (one line per subtitle)…";
-      el.resultPanel.parentNode.insertBefore(textarea, el.resultMeta.nextSibling);
-
-      const applyBtn = document.createElement("button");
-      applyBtn.textContent = "Apply edits";
-      applyBtn.style.marginRight = "8px";
-      applyBtn.onclick = () => {
-        const newLines = textarea.value.split(/\r?\n/);
-        state.segments.forEach((seg, i) => {
-          if (i < newLines.length && newLines[i].trim()) seg.text = newLines[i].trim();
-        });
-        state.result.text = state.segments.map((s) => s.text).join(" ");
-        state.result.srt = buildSrt(state.segments);
-        renderTranscript();
-        toast("Edits applied");
-      };
-      el.resultPanel.parentNode.insertBefore(applyBtn, textarea.nextSibling);
-
       buildPlayer();
       syncTabs();
       renderTranscript();
@@ -604,6 +580,7 @@
 
   document.querySelectorAll(".tab").forEach((tab) =>
     tab.addEventListener("click", () => {
+      if (state.editing) exitEditMode(false);
       state.view = tab.dataset.view;
       syncTabs();
       renderTranscript();
@@ -647,6 +624,47 @@
     if (!target) return;
     seekTo(parseFloat(target.dataset.s));
   });
+
+  /* ---------------- inline transcript editing ---------------- */
+
+  function enterEditMode() {
+    if (!state.result || state.editing) return;
+    state.editing = true;
+    state.view = "line";
+    syncTabs();
+    el.transcriptView.innerHTML = "";
+    const ta = document.createElement("textarea");
+    ta.id = "editTranscript";
+    ta.className = "transcript-editor";
+    ta.value = state.segments.map((s) => s.text).join("\n");
+    el.transcriptView.appendChild(ta);
+    if (el.editBtn) el.editBtn.textContent = "Save edits";
+    ta.focus();
+  }
+
+  function exitEditMode(save) {
+    if (!state.editing) return;
+    const ta = document.getElementById("editTranscript");
+    if (save && ta) {
+      const lines = ta.value.split(/\r?\n/);
+      state.segments.forEach((seg, i) => {
+        if (i < lines.length) seg.text = lines[i].trim();
+      });
+      state.result.text = state.segments.map((s) => s.text).join(" ");
+      state.result.srt = buildSrt(state.segments);
+    }
+    state.editing = false;
+    if (el.editBtn) el.editBtn.textContent = "Edit transcript";
+    renderTranscript();
+    if (save) toast("Edits saved");
+  }
+
+  if (el.editBtn) {
+    el.editBtn.addEventListener("click", () => {
+      if (state.editing) exitEditMode(true);
+      else enterEditMode();
+    });
+  }
 
   function escapeHtml(str) {
     return String(str)
