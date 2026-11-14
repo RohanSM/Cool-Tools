@@ -437,24 +437,30 @@
     setTimeout(() => {
       showPanel("result");
       // --- edit before download ---
-      const existingText = state.result.text || state.segments.map(s => s.text).join(" ");
+      const existingLines = state.segments.map((s) => s.text).join("\n");
       const textarea = document.createElement("textarea");
       textarea.id = "editTranscript";
-      textarea.value = existingText;
+      textarea.value = existingLines;
       textarea.style.width = "100%";
       textarea.style.height = "150px";
       textarea.style.marginBottom = "8px";
+      textarea.placeholder = "Edit the transcript here (one line per subtitle)…";
       el.resultPanel.parentNode.insertBefore(textarea, el.resultMeta.nextSibling);
 
       const applyBtn = document.createElement("button");
       applyBtn.textContent = "Apply edits";
       applyBtn.style.marginRight = "8px";
       applyBtn.onclick = () => {
-        state.result.text = textarea.value;
-        // re‑render the download buttons so they use the edited text
-        el.dlSrt.onclick();
+        const newLines = textarea.value.split(/\r?\n/);
+        state.segments.forEach((seg, i) => {
+          if (i < newLines.length && newLines[i].trim()) seg.text = newLines[i].trim();
+        });
+        state.result.text = state.segments.map((s) => s.text).join(" ");
+        state.result.srt = buildSrt(state.segments);
+        renderTranscript();
+        toast("Edits applied");
       };
-      el.resultPanel.parentNode.insertBefore(applyBtn, el.resultMeta.nextSibling);
+      el.resultPanel.parentNode.insertBefore(applyBtn, textarea.nextSibling);
 
       buildPlayer();
       syncTabs();
@@ -720,6 +726,26 @@
     return lines;
   }
 
+  function buildSrt(segs) {
+    return segs
+      .map((s, i) => {
+        const start = formatSrtTime(s.start);
+        const end = formatSrtTime(s.end);
+        return `${i + 1}\n${start} --> ${end}\n${s.text}\n`;
+      })
+      .join("\n");
+  }
+
+  function formatSrtTime(seconds) {
+    const totalMs = Math.max(0, Math.round(Number(seconds) * 1000) || 0);
+    const h = Math.floor(totalMs / 3600000);
+    const m = Math.floor((totalMs % 3600000) / 60000);
+    const s = Math.floor((totalMs % 60000) / 1000);
+    const ms = totalMs % 1000;
+    const pad = (n, w = 2) => String(n).padStart(w, "0");
+    return `${pad(h)}:${pad(m)}:${pad(s)},${pad(ms, 3)}`;
+  }
+
   /* ---------------- downloads ---------------- */
 
   function download(content, filename, type) {
@@ -737,7 +763,7 @@
 
   el.dlSrt.addEventListener("click", () => {
     if (!state.result) return;
-    const content = state.result.text || state.result.srt || "";
+    const content = state.result.srt || "";
     download(content, `${baseName()}.srt`, "application/x-subrip;charset=utf-8");
   });
   el.dlWords.addEventListener("click", () => {
